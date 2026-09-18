@@ -1,0 +1,19 @@
+# 换行符策略：仓库与工作区统一用 LF。
+#
+# 为什么：源码在 macOS 上写，构建在 Windows 上做。如果两边各行其是，
+# 每次跨平台 checkout 都会产生整文件级别的换行符 diff，把真正的改动淹没。
+# 统一成 LF 后，任何平台上的 diff 都只反映内容变化。
+* text=auto eol=lf
+
+# 二进制：禁止任何换行符转换，否则会破坏文件内容。
+*.exe  binary
+*.obj  binary
+*.o    binary
+*.lib  binary
+*.png  binary
+*.ico  binary
+
+# 让 GitHub/其他平台的语法高亮正确识别
+*.c    text diff=c
+*.h    text diff=c
+Makefile text
