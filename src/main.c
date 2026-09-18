@@ -6,6 +6,7 @@
 #include "llm.h"
 #include "msgs.h"
 #include "tools.h"
+#include "permissions.h"
 
 /*
  * 第二步：agent 循环。
@@ -34,6 +35,11 @@
 #define MAX_ROUNDS 20
 
 int main(void) {
+    if (!permissions_init()) {
+        fprintf(stderr, "Failed to initialize workspace permissions\n");
+        return 1;
+    }
+
     if (!load_env(".env")) {
         fprintf(stderr, "Failed to load .env\n");
         return 1;

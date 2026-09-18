@@ -1,33 +1,33 @@
-# 平台无关的单元测试。用宿主编译器（macOS/Linux 上的 cc）构建，
-# 和生成 agent.exe 的那套 mingw 工具链完全无关。
-#
-#   make -C tests        构建并运行
-#   make -C tests clean
-#
-# 必须在 tests/ 下用 -C 调用，因为用例里用了 src/main.c 这类相对路径。
+# 平台无关测试；从项目根目录或 tests/ 中都可以启动。
+CC ?= cc
+CPPFLAGS += -I../include -I../src/tools
+CFLAGS ?= -std=c11 -Wall -Wextra
+ROOT := ..
+BUILD := $(ROOT)/build/tests
+COMMON := $(ROOT)/src/strbuf.c $(ROOT)/src/cJSON.c
+TOOLS := $(wildcard $(ROOT)/src/tools/*.c)
+HEADERS := $(wildcard $(ROOT)/include/*.h $(ROOT)/src/tools/*.h)
+TARGETS := $(BUILD)/test_tools $(BUILD)/test_registry $(BUILD)/test_permissions
 
-CC      ?= cc
-CFLAGS  ?= -std=c11 -Wall -Wextra -I../include
+all: $(TARGETS)
+	cd $(ROOT) && ./build/tests/test_tools
+	cd $(ROOT) && ./build/tests/test_registry
+	cd $(ROOT) && ./build/tests/test_permissions
 
-ROOT  := ..
-TARGET := test_tools
+$(BUILD):
+	mkdir -p $@
 
-# 平台无关的源文件清单。
-# 条件：不 include windows.h / 不调用 WinHTTP / 不使用 _putenv_s。
-# 以后每写一个这样的模块，就加到这里 —— 加进来的那一刻它就有了测试能力。
+$(BUILD)/test_tools: test_tools.c $(COMMON) $(TOOLS) $(ROOT)/src/msgs.c $(ROOT)/src/permissions.c $(HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(filter %.c,$^) $(LDFLAGS) -o $@
 
-LIB_SRC := $(ROOT)/src/strbuf.c \
-           $(ROOT)/src/tools.c \
-           $(ROOT)/src/msgs.c \
-           $(ROOT)/src/cJSON.c
+# 用两个测试工具替换 builtins.c，验证扩展不需要改 registry.c。
+$(BUILD)/test_registry: test_registry.c $(COMMON) $(ROOT)/src/tools/registry.c $(HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(filter %.c,$^) $(LDFLAGS) -o $@
 
-all: $(TARGET)
-	cd $(ROOT) && ./tests/$(TARGET)
-
-$(TARGET): test_tools.c $(LIB_SRC)
-	$(CC) $(CFLAGS) $^ -o $@
+$(BUILD)/test_permissions: test_permissions.c $(ROOT)/src/permissions.c $(HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(filter %.c,$^) $(LDFLAGS) -o $@
 
 clean:
-	rm -f $(TARGET) $(ROOT)/tmp_big.txt $(ROOT)/tmp_empty.txt
+	$(RM) $(TARGETS)
 
 .PHONY: all clean

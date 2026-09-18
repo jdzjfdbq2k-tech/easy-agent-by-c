@@ -1,5 +1,5 @@
 /*
- * 平台无关的单元测试：覆盖 strbuf.c / tools.c / msgs.c。
+ * 平台无关的单元测试：覆盖 strbuf.c / tools 模块 / msgs.c。
  *
  * 这三个文件不碰 Windows API，所以在 macOS / Linux 上也能直接编译运行。
  * 它的价值在于：你选了 Windows 原生路线（WinHTTP），本机跑不了 agent.exe，
@@ -18,6 +18,7 @@
 #include "msgs.h"
 #include "strbuf.h"
 #include "tools.h"
+#include "permissions.h"
 
 static int failures = 0;
 
@@ -126,6 +127,16 @@ static void test_read_file_errors(void) {
 
     out = tool_run("read_file", "{\"path\": 12345}");
     CHECK(out && strncmp(out, "error:", 6) == 0, "wrong param type -> error string");
+    free(out);
+
+    out = tool_run("read_file", "{\"path\":\"/etc/hosts\"}");
+    CHECK(out && strncmp(out, "error:", 6) == 0,
+          "read_file cannot bypass permissions with an absolute path");
+    free(out);
+
+    out = tool_run("read_file", "{\"path\":\"src/../Makefile\"}");
+    CHECK(out && strncmp(out, "error:", 6) == 0,
+          "read_file rejects parent traversal even when target is inside");
     free(out);
 
     out = tool_run("no_such_tool", "{}");
@@ -246,22 +257,24 @@ static void test_truncation_utf8(void) {
 static void test_schema(void) {
     printf("== tools_schema_json ==\n");
 
-    const char *schema = tools_schema_json();
+    char *schema = tools_schema_json();
     CHECK(schema != NULL, "schema is not NULL");
     CHECK(schema && schema[0] == '[', "schema is a JSON array");
 
-    int depth = 0, in_string = 0, ok = 1;
-    for (const char *p = schema; p && *p; p++) {
-        if (*p == '"' && (p == schema || *(p - 1) != '\\')) in_string = !in_string;
-        if (in_string) continue;
-        if (*p == '{' || *p == '[') depth++;
-        if (*p == '}' || *p == ']') depth--;
-        if (depth < 0) { ok = 0; break; }
-    }
-    CHECK(ok && depth == 0 && !in_string, "braces and brackets are balanced");
-
-    CHECK(strstr(schema, "read_file") != NULL, "declares read_file");
-    CHECK(strstr(schema, "\"required\"") != NULL, "declares required params");
+    cJSON *root = schema ? cJSON_Parse(schema) : NULL;
+    CHECK(cJSON_IsArray(root), "schema is valid JSON array");
+    CHECK(cJSON_GetArraySize(root) == 1, "one built-in tool registered");
+    cJSON *fn = cJSON_GetObjectItem(cJSON_GetArrayItem(root, 0), "function");
+    cJSON *name = cJSON_GetObjectItem(fn, "name");
+    CHECK(cJSON_IsString(name) && strcmp(name->valuestring, "read_file") == 0,
+          "registered name is read_file");
+    cJSON *params = cJSON_GetObjectItem(fn, "parameters");
+    CHECK(cJSON_IsObject(params), "parameters is an object, not an encoded string");
+    cJSON *required = cJSON_GetArrayItem(cJSON_GetObjectItem(params, "required"), 0);
+    CHECK(cJSON_IsString(required) && strcmp(required->valuestring, "path") == 0,
+          "path remains required");
+    cJSON_Delete(root);
+    free(schema);
 }
 
 static void test_msgs(void) {
@@ -373,6 +386,7 @@ static void test_msgs(void) {
 }
 
 int main(void) {
+    if (!permissions_init()) return 1;
     test_strbuf_basic();
     test_strbuf_edge();
     test_strbuf_growth();

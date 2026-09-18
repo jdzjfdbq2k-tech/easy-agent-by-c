@@ -2,45 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "cJSON.h"
+#include "tool_definition.h"
 #include "strbuf.h"
-#include "tools.h"
+#include "permissions.h"
 
-/* 单个工具的输出上限。超了就截断。
- *
- * 为什么现在就要做：模型很容易兴奋地让你读一个大文件。几万字符塞进对话，
- * 下一次请求就会超出上下文长度，接口直接报错。等出了问题再回头加，
- * 你会花很多时间才定位到原因。 */
 #define TOOL_OUTPUT_MAX 4000
-
-/* ------------------------------------------------------------------ */
-/* 工具定义：给模型看的说明书                                          */
-/* ------------------------------------------------------------------ */
-
-static const char *SCHEMA_JSON =
-"["
-"  {"
-"    \"type\": \"function\","
-"    \"function\": {"
-"      \"name\": \"read_file\","
-"      \"description\": \"读取一个文本文件的内容并返回。用于查看源码。\","
-"      \"parameters\": {"
-"        \"type\": \"object\","
-"        \"properties\": {"
-"          \"path\": {"
-"            \"type\": \"string\","
-"            \"description\": \"文件路径，相对于工作目录，例如 src/main.c\""
-"          }"
-"        },"
-"        \"required\": [\"path\"]"
-"      }"
-"    }"
-"  }"
-"]";
-
-const char *tools_schema_json(void) {
-    return SCHEMA_JSON;
-}
 
 /* ------------------------------------------------------------------ */
 /* read_file 的实现                                                    */
@@ -78,9 +44,10 @@ static char *tool_read_file(const cJSON *args) {
         return sb_detach(&out);
     }
 
-    FILE *fp = fopen(path->valuestring, "rb");
+    FILE *fp = permissions_open_read(path->valuestring);
     if (!fp) {
-        sb_printf(&out, "error: cannot open file \"%s\"", path->valuestring);
+        sb_printf(&out, "error: file denied or cannot be opened (workspace files only): \"%s\"",
+                  path->valuestring);
         return sb_detach(&out);
     }
 
@@ -125,51 +92,13 @@ static char *tool_read_file(const cJSON *args) {
     return sb_detach(&out);
 }
 
-/* ------------------------------------------------------------------ */
-/* 分发                                                                */
-/* ------------------------------------------------------------------ */
-
-char *tool_run(const char *name, const char *arguments_json) {
-    strbuf out;
-    sb_init(&out);
-
-    if (!name) {
-        sb_puts(&out, "error: tool name is null");
-        return sb_detach(&out);
-    }
-
-    /* 模型偶尔会给出空字符串或残缺 JSON。统一兜底成 {}，
-     * 让下面的参数校验去报"缺参数"，而不是在这里说"JSON 坏了" ——
-     * 后者对模型来说信息量更小。 */
-    const char *text = (arguments_json && *arguments_json) ? arguments_json : "{}";
-
-    cJSON *args = cJSON_Parse(text);
-    if (!args) {
-        sb_printf(&out, "error: arguments is not valid JSON: %s", text);
-        return sb_detach(&out);
-    }
-
-    char *result = NULL;
-
-    if (strcmp(name, "read_file") == 0) {
-        result = tool_read_file(args);
-    } else {
-        sb_printf(&out, "error: unknown tool \"%s\"", name);
-        result = sb_detach(&out);
-    }
-
-    cJSON_Delete(args);
-    return result;
-}
-
-void tool_call_free(tool_call *call) {
-    if (!call) return;
-
-    free(call->id);
-    free(call->name);
-    free(call->arguments);
-
-    call->id = NULL;
-    call->name = NULL;
-    call->arguments = NULL;
-}
+const tool_definition tool_read_file_definition = {
+    .name = "read_file",
+    .description = "读取一个文本文件的内容并返回。用于查看源码。",
+    .parameters_json =
+        "{\"type\":\"object\",\"properties\":{"
+        "\"path\":{\"type\":\"string\","
+        "\"description\":\"文件路径，仅限工作区相对路径，例如 src/main.c\"}},"
+        "\"required\":[\"path\"]}",
+    .execute = tool_read_file
+};
