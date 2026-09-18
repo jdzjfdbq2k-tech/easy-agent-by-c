@@ -7,17 +7,21 @@ BUILD := $(ROOT)/build/tests
 COMMON := $(ROOT)/src/strbuf.c $(ROOT)/src/cJSON.c
 TOOLS := $(wildcard $(ROOT)/src/tools/*.c)
 HEADERS := $(wildcard $(ROOT)/include/*.h $(ROOT)/src/tools/*.h)
-TARGETS := $(BUILD)/test_tools $(BUILD)/test_registry $(BUILD)/test_permissions
+TARGETS := $(BUILD)/test_tools $(BUILD)/test_registry $(BUILD)/test_permissions $(BUILD)/test_workspace_tools
 
 all: $(TARGETS)
 	cd $(ROOT) && ./build/tests/test_tools
 	cd $(ROOT) && ./build/tests/test_registry
 	cd $(ROOT) && ./build/tests/test_permissions
+	cd $(ROOT) && ./build/tests/test_workspace_tools
 
 $(BUILD):
 	mkdir -p $@
 
 $(BUILD)/test_tools: test_tools.c $(COMMON) $(TOOLS) $(ROOT)/src/msgs.c $(ROOT)/src/permissions.c $(HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(filter %.c,$^) $(LDFLAGS) -o $@
+
+$(BUILD)/test_workspace_tools: test_workspace_tools.c $(COMMON) $(TOOLS) $(ROOT)/src/permissions.c $(HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(filter %.c,$^) $(LDFLAGS) -o $@
 
 # 用两个测试工具替换 builtins.c，验证扩展不需要改 registry.c。

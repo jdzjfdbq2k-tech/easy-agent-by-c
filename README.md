@@ -1,6 +1,6 @@
 # easy-agent-by-c
 
-一个用 C 编写的 Windows 命令行 Agent。模型通过兼容 Chat Completions 的接口请求工具，程序执行工具后将结果回填到对话，最多调用模型 20 轮。目前内置 `read_file`。
+一个用 C 编写的 Windows 命令行 Agent。模型通过兼容 Chat Completions 的接口请求工具，程序执行工具后将结果回填到对话，最多调用模型 20 轮。目前内置 `read_file`、`list_dir`、`write_file` 和 `run_command`。
 
 ## 目录
 
@@ -20,7 +20,11 @@ src/
     builtins.c           内置工具注册列表
     registry.c           schema 生成、参数解析和执行分发
     read_file.c          文件读取及其工具定义
-tests/                  平台无关测试
+    list_dir.c           列出目录
+    write_file.c         创建或覆盖文本文件
+    run_command.c        命令执行、超时与输出收集
+    text_output.h        UTF-8 输出校验
+tests/                  macOS/Linux 宿主测试
 build/                  生成的程序、对象文件与测试程序（Git 忽略）
 ```
 
@@ -30,7 +34,7 @@ build/                  生成的程序、对象文件与测试程序（Git 忽�
 
 ```sh
 make                         # 生成 build/agent.exe
-make test                    # 本机运行平台无关测试，无需 MinGW
+make test                    # macOS/Linux 宿主测试，无需 MinGW
 make clean                   # 清理本构建配置产生的文件
 ```
 
@@ -60,4 +64,25 @@ make clean                   # 清理本构建配置产生的文件
 
 只接受工作区相对路径，拒绝绝对路径、盘符、UNC/设备路径、任何 `..` 路径段及非普通文件。Windows 验证实际打开句柄的最终路径，阻止符号链接或目录联接指向工作区外；Mac/Linux 使用目录描述符逐级打开，保守拒绝所有符号链接，包括指向工作区内部的链接。路径末尾的点或空格也会被拒绝（单独的 `.` 路径段除外），避免 Windows 路径别名。
 
-当前提供只读入口。后续写入、创建或删除工具也应在这个模块中增加对应的受控操作，不能用只读检查结果再自行 `fopen` 写入。本模块是工具层的访问约束，不是操作系统沙箱。
+`list_dir` 通过 `permissions_list_dir()` 枚举目录，`write_file` 通过 `permissions_open_write()` 创建或覆盖文件。写入和枚举保守拒绝路径中的符号链接与 Windows reparse points；写入额外拒绝多重硬链接，并在验证实际文件后才截断旧内容。父目录必须存在，写入不是原子替换：磁盘错误可能留下部分内容。
+
+本模块是文件工具的访问约束，不是操作系统沙箱。`run_command` 拥有当前用户权限，可以访问工作区外文件、联网或执行其他程序，不能用它来保证文件工具的路径限制。
+
+## 内置工具参数
+
+| 工具 | 参数示例 | 行为 |
+| --- | --- | --- |
+| `read_file` | `{"path":"src/main.c"}` | 读取文件，正文最多约 4000 字节 |
+| `list_dir` | `{"path":"."}` | 列出直接子项，目录以 `/` 结尾；不递归、不保证排序 |
+| `write_file` | `{"path":"notes.txt","content":"hello\n"}` | 创建或覆盖完整内容，空字符串可清空文件 |
+| `run_command` | `{"command":"echo hello","timeout_ms":30000}` | 执行命令，合并 stdout/stderr，附上 `exit_code` |
+
+目录列表与命令输出的正文上限为 4000 字节，超过时附上截断标记。目录名中的控制字节、反斜杠和非法 UTF-8 字节显示为 `\xHH`；命令输出中的非法 UTF-8 或 NUL 字节以 `?` 替换。合法中文不会在截断点被切成半个字符。
+
+命令的 `timeout_ms` 可省略，默认 30000，允许 1–120000 的整数。超时返回 `error: command timed out` 和退出码 124。标准输入接到空设备，不支持交互输入。每次调用从初始化工作区启动，上一条命令的 `cd` 不影响下一条调用。
+
+Windows 使用系统 `cmd.exe /d /s /c`，在独立隐藏控制台中设置 UTF-8 代码页，并用 Job Object 在超时或主命令结束时清理子进程。工作区须为盘符路径；UNC 工作目录会明确报错。外部程序仍可能自行输出其他编码，应将其配置为 UTF-8。
+
+macOS/Linux 测试实现使用 `/bin/sh -c`，通过固定目录句柄进入工作区，超时或主命令结束时清理同一进程组。主动创建新会话、脱离进程组的程序不保证被清理；这不是用于运行不可信命令的系统沙箱。
+
+宿主测试包含文件创建/覆盖、工作区与链接限制、固定目录、命令退出码、输出截断、超时和后台进程清理。Windows 分支仍需在 Windows 上构建并运行验证；宿主测试不能替代该验证。

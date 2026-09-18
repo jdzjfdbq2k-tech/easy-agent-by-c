@@ -263,7 +263,7 @@ static void test_schema(void) {
 
     cJSON *root = schema ? cJSON_Parse(schema) : NULL;
     CHECK(cJSON_IsArray(root), "schema is valid JSON array");
-    CHECK(cJSON_GetArraySize(root) == 1, "one built-in tool registered");
+    CHECK(cJSON_GetArraySize(root) == 4, "four built-in tools registered");
     cJSON *fn = cJSON_GetObjectItem(cJSON_GetArrayItem(root, 0), "function");
     cJSON *name = cJSON_GetObjectItem(fn, "name");
     CHECK(cJSON_IsString(name) && strcmp(name->valuestring, "read_file") == 0,
@@ -385,6 +385,56 @@ static void test_msgs(void) {
     msgs_free(m);
 }
 
+
+static void test_new_tools(void) {
+    FILE *bad_name = fopen("tmp_bad\xff", "wb");
+    if (bad_name) {
+        fclose(bad_name);
+        char *listing = tool_run("list_dir", "{\"path\":\".\"}");
+        CHECK(listing && utf8_valid(listing) && strstr(listing, "tmp_bad\\xff"), "directory listing escapes invalid UTF-8 bytes");
+        free(listing);
+        remove("tmp_bad\xff");
+    } else puts("  SKIP  filesystem does not support non-UTF-8 filenames");
+    char *out = tool_run("list_dir", "{\"path\":\"src\"}");
+    CHECK(out && strstr(out, "main.c") && strstr(out, "tools/"), "list_dir lists files and directories");
+    free(out);
+    out = tool_run("list_dir", "{\"path\":\"..\"}");
+    CHECK(out && strstr(out, "error:"), "list_dir rejects traversal"); free(out);
+    out = tool_run("write_file", "{\"path\":\"tmp_write.txt\",\"content\":\"中文\\nhello\"}");
+    CHECK(out && !strstr(out, "error:"), "write_file creates file"); free(out);
+    out = tool_run("read_file", "{\"path\":\"tmp_write.txt\"}");
+    CHECK(out && strcmp(out, "中文\nhello") == 0, "written content round trips"); free(out);
+    out = tool_run("write_file", "{\"path\":\"tmp_write.txt\",\"content\":\"\"}");
+    CHECK(out && !strstr(out, "error:"), "write_file allows empty replacement"); free(out);
+    out = tool_run("read_file", "{\"path\":\"tmp_write.txt\"}");
+    CHECK(out && strcmp(out, "(empty file)") == 0, "overwrite truncates old content"); free(out);
+    remove("tmp_write.txt");
+    out = tool_run("write_file", "{\"path\":\"../escape.txt\",\"content\":\"x\"}");
+    CHECK(out && strstr(out, "error:"), "write_file rejects traversal"); free(out);
+    out = tool_run("run_command", "{\"command\":\"echo hello; echo problem >&2; exit 7\"}");
+    CHECK(out && strstr(out, "hello") && strstr(out, "problem") && strstr(out, "exit_code: 7"), "command captures stdout stderr and exit code"); free(out);
+    out = tool_run("run_command", "{\"command\":\"sleep 5\",\"timeout_ms\":100}");
+    CHECK(out && strstr(out, "timed out"), "command enforces timeout"); free(out);
+    out = tool_run("run_command", "{\"command\":\"yes x\",\"timeout_ms\":100}");
+    CHECK(out && strlen(out) < 4300 && strstr(out, "truncated"), "command bounds continuous output"); free(out);
+
+    out = tool_run("list_dir", "{\"path\":\"src/\"}");
+    CHECK(out && strstr(out, "main.c"), "list_dir accepts trailing separator"); free(out);
+    out = tool_run("run_command", "{\"command\":\"printf '\\\\344\\\\270\\\\255'; printf '\\\\377'\"}");
+    CHECK(out && strstr(out, "中") && utf8_valid(out), "command output preserves UTF-8 and sanitizes invalid bytes"); free(out);
+    out = tool_run("run_command", "{\"command\":\"read value; echo stdin-closed\"}");
+    CHECK(out && strstr(out, "stdin-closed") && strstr(out, "exit_code: 0"), "command stdin is closed for interactive reads"); free(out);
+    out = tool_run("run_command", "{\"command\":\"echo x\",\"timeout_ms\":0}");
+    CHECK(out && strstr(out, "error:"), "command rejects invalid timeout"); free(out);
+    out = tool_run("run_command", "{\"command\":\"printf '%04000d' 0\"}");
+    CHECK(out && !strstr(out, "truncated") && strlen(out) > 4000, "exact output limit does not falsely truncate"); free(out);
+    const char *names[] = {"list_dir", "write_file", "run_command"};
+    for (size_t i = 0; i < 3; i++) {
+        out = tool_run(names[i], "{\"path\":12,\"command\":false,\"content\":0}");
+        CHECK(out && strstr(out, "error:"), "new tools validate argument types"); free(out);
+    }
+}
+
 int main(void) {
     if (!permissions_init()) return 1;
     test_strbuf_basic();
@@ -395,6 +445,7 @@ int main(void) {
     test_truncation();
     test_truncation_utf8();
     test_schema();
+    test_new_tools();
     test_msgs();
 
     printf("\n");
