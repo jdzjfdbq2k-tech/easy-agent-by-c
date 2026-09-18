@@ -32,7 +32,6 @@ src/
     write_file.c         局部编辑文本文件
     run_command.c        命令执行、超时与输出收集
     text_output.h        UTF-8 输出校验
-tests/                 工具层与消息层测试
 workspace/             Agent 的默认工作目录（可自动创建）
 build/                 生成的程序、对象文件与测试程序（Git 忽略）
 ```
@@ -83,6 +82,8 @@ Makefile 里显式设了 `SHELL := cmd.exe`，recipe 全部是 cmd 原生语法�
 `src/tools/file_io.h` 只负责 UTF-8 路径转换和文件打开，保留中文文件名支持。文件编辑仍要求 `old_string` 唯一匹配；父目录必须存在。写入不是原子替换，磁盘错误可能留下部分内容。
 
 终端只显示工具名称，完整工具结果仍回传模型。
+
+每轮模型响应打印 `[tokens round N] input=... output=... total=...`，任务结束打印累计值。数据读取响应 `usage` 中的 `prompt_tokens` 和 `completion_tokens`；输入包含缓存命中的 token，输出按接口统计口径计数，不另行叠加推理 token。缺失用量的轮次显示 `usage unavailable`，不计入累计值；请求失败且未取得有效响应的消耗也无法统计。累计值仅代表已报告用量的轮次，不是账单估算。
 
 ## 内置工具参数
 

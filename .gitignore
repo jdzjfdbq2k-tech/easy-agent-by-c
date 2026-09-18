@@ -2,7 +2,7 @@
 *.o
 tmp_*.txt
 tests/test_tools
-/.8workspace
+/workspace
 
 
 

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include <limits.h>
 
 #include "cJSON.h"
 #include "client.h"
@@ -88,6 +89,13 @@ static char *make_json(const char *model, const char *messages_json) {
 
 /* 解析响应                                                            */
 
+static int token_count(const cJSON *usage, const char *name) {
+    const cJSON *n = cJSON_GetObjectItemCaseSensitive(usage, name);
+    if (!cJSON_IsNumber(n) || !(n->valuedouble >= 0 && n->valuedouble <= INT_MAX) ||
+        n->valuedouble != (double)n->valueint) return -1;
+    return n->valueint;
+}
+
 static llm_result *parse_response(const char *response) {
     cJSON *root = cJSON_Parse(response);
     if (!root) {
@@ -119,6 +127,10 @@ static llm_result *parse_response(const char *response) {
         cJSON_Delete(root);
         return NULL;
     }
+
+    const cJSON *usage = cJSON_GetObjectItemCaseSensitive(root, "usage");
+    r->input_tokens = token_count(usage, "prompt_tokens");
+    r->output_tokens = token_count(usage, "completion_tokens");
 
     /* 分支一：普通回答 */
     const cJSON *content = cJSON_GetObjectItem(message, "content");
@@ -198,7 +210,7 @@ llm_result *call_llm(const char *messages_json) {
     cJSON_free(json);
 
     if (!response) {
-        fprintf(stderr, "[llm] http request failed (check network / LLM_HOST)\n");
+        fprintf(stderr, "[llm] no complete HTTP response; see [http] diagnostics above\n");
         return NULL;
     }
 
