@@ -8,9 +8,7 @@
 #include "llm.h"
 #include "tools.h"
 
-/* ------------------------------------------------------------------ */
 /* 小工具                                                              */
-/* ------------------------------------------------------------------ */
 
 static wchar_t *to_wide(const char *s) {
     if (!s) return NULL;
@@ -42,12 +40,6 @@ static wchar_t *make_auth(const char *key) {
     return w;
 }
 
-/* 复制 cJSON 里的字符串到普通堆内存。
- *
- * 为什么要复制：cJSON_Delete(root) 会连同所有 valuestring 一起释放，
- * 而我们希望在解析完就丢掉整棵树，只留下需要的那几个字段。
- * 用 malloc 而不是 cJSON_malloc，是为了和调用方的 free 配对 ——
- * "谁 malloc 谁 free" 的约定一旦被打破，后面就会有人用错释放函数。 */
 static char *dup_str(const char *s) {
     if (!s) return NULL;
 
@@ -58,9 +50,7 @@ static char *dup_str(const char *s) {
     return p;
 }
 
-/* ------------------------------------------------------------------ */
 /* 组装请求                                                            */
-/* ------------------------------------------------------------------ */
 
 static char *make_json(const char *model, const char *messages_json) {
     cJSON *root = cJSON_CreateObject();
@@ -96,9 +86,7 @@ static char *make_json(const char *model, const char *messages_json) {
     return json;
 }
 
-/* ------------------------------------------------------------------ */
 /* 解析响应                                                            */
-/* ------------------------------------------------------------------ */
 
 static llm_result *parse_response(const char *response) {
     cJSON *root = cJSON_Parse(response);
@@ -145,10 +133,7 @@ static llm_result *parse_response(const char *response) {
     if (n > 0) {
         r->calls = calloc((size_t)n, sizeof(tool_call));
         if (r->calls) {
-            /* 这里直接把 call_count 设成 n，而不是"成功解析出几个算几个"。
-             * 因为 calls 是 calloc 出来的，字段全是 NULL，
-             * 即使某一项解析失败，释放路径也是安全的。
-             * 反过来如果只记成功的数量，未计入的那些项就永远泄漏了。 */
+
             r->call_count = n;
 
             for (int i = 0; i < n; i++) {
@@ -168,17 +153,6 @@ static llm_result *parse_response(const char *response) {
         }
     }
 
-    /* 把助手这条消息**原样**序列化下来，供调用方回填进历史。
-     *
-     * 两件事必须注意：
-     *   1. 位置：一定要在 cJSON_Delete(root) 之前。放在后面就是野指针 ——
-     *      这是这段代码里最容易写错的一行。
-     *   2. 方式：不要自己拼一条 {"role":"assistant",...}。模型还可能返回
-     *      reasoning_content 之类的字段，各家服务商要求保留哪些、丢掉哪些
-     *      并不一致。原样照抄保真度最高。
-     *
-     * 额外做一次 dup_str 是为了让 llm_result 的四个字段全部由 malloc 持有，
-     * 释放时统一用 free，不用去记哪个字段该用 cJSON_free。 */
     char *printed = cJSON_PrintUnformatted(message);
     if (printed) {
         r->assistant_json = dup_str(printed);
@@ -189,9 +163,7 @@ static llm_result *parse_response(const char *response) {
     return r;
 }
 
-/* ------------------------------------------------------------------ */
 /* 对外接口                                                            */
-/* ------------------------------------------------------------------ */
 
 llm_result *call_llm(const char *messages_json) {
     const char *host_s = getenv("LLM_HOST");

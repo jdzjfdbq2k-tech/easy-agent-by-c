@@ -1,15 +1,6 @@
-/*
- * 平台无关的单元测试：覆盖 strbuf.c / tools 模块 / msgs.c。
- *
- * 这三个文件不碰 Windows API，所以在 macOS / Linux 上也能直接编译运行。
- * 它的价值在于：你选了 Windows 原生路线（WinHTTP），本机跑不了 agent.exe，
- * 但 agent 里最容易写错的那部分逻辑（字符串增长、JSON 转义、参数解析、
- * 输出截断、历史累积）全在这里，可以当场验穿。
- *
- * 必须在仓库根目录运行，因为用例里用了 src/main.c 这类相对路径。
- *   make -C tests
- */
 
+
+#include <direct.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,7 +9,6 @@
 #include "msgs.h"
 #include "strbuf.h"
 #include "tools.h"
-#include "permissions.h"
 
 static int failures = 0;
 
@@ -102,15 +92,50 @@ static void test_strbuf_growth(void) {
 static void test_read_file(void) {
     printf("== tool_run: read_file ==\n");
 
-    char *out = tool_run("read_file", "{\"path\":\"src/main.c\"}");
+    /* 工作区固定在 workspace/ 子目录，夹具也必须落在那里面，
+     * 再通过工具自己的相对路径读回来。 */
+    FILE *fp = fopen("tmp_read.c", "wb");
+    if (!fp) {
+        printf("  FAIL  could not create test fixture\n");
+        failures++;
+        return;
+    }
+    fputs("#include <stdio.h>\nint main(void) { load_env(\".env\"); return 0; }\n", fp);
+    fclose(fp);
+
+    char *out = tool_run("read_file", "{\"path\":\"tmp_read.c\"}");
     CHECK(out != NULL, "returns a string (never NULL)");
-    CHECK(out && strstr(out, "load_env") != NULL, "content really is main.c");
-    CHECK(out && strstr(out, "include <stdio.h>") != NULL, "content starts correctly");
+    CHECK(out && strstr(out, "load_env") != NULL, "content really round trips");
+    CHECK(out && strstr(out, "#include <stdio.h>") != NULL, "content starts correctly");
     free(out);
 
-    out = tool_run("read_file", "{ \"path\" : \"src/llm.c\" }");
-    CHECK(out && strstr(out, "parse_response") != NULL, "whitespace in arguments tolerated");
+    out = tool_run("read_file", "{ \"path\" : \"tmp_read.c\" }");
+    CHECK(out && strstr(out, "load_env") != NULL, "whitespace in arguments tolerated");
     free(out);
+
+    remove("tmp_read.c");
+}
+
+/* Paths are ordinary OS paths; all fixtures stay in our test directory. */
+static void test_plain_paths(void) {
+    _mkdir("tmp_paths");
+    char *out = tool_run("write_file", "{\"path\":\"tmp_paths/../tmp_paths/plain.txt\",\"old_string\":\"\",\"new_string\":\"plain paths\"}");
+    CHECK(out && strstr(out, "created:"), "write_file accepts parent path segments");
+    free(out);
+
+    char *absolute = _fullpath(NULL, "tmp_paths/plain.txt", 0);
+    cJSON *args = cJSON_CreateObject();
+    if (absolute) cJSON_AddStringToObject(args, "path", absolute);
+    char *json = cJSON_PrintUnformatted(args);
+    out = tool_run("read_file", json);
+    CHECK(out && strcmp(out, "plain paths") == 0, "read_file accepts absolute paths");
+    free(out); free(absolute); cJSON_free(json); cJSON_Delete(args);
+
+    out = tool_run("list_dir", "{\"path\":\"tmp_paths/..\"}");
+    CHECK(out && strstr(out, "tmp_paths/"), "list_dir accepts parent path segments");
+    free(out);
+    remove("tmp_paths/plain.txt");
+    _rmdir("tmp_paths");
 }
 
 static void test_read_file_errors(void) {
@@ -127,16 +152,6 @@ static void test_read_file_errors(void) {
 
     out = tool_run("read_file", "{\"path\": 12345}");
     CHECK(out && strncmp(out, "error:", 6) == 0, "wrong param type -> error string");
-    free(out);
-
-    out = tool_run("read_file", "{\"path\":\"/etc/hosts\"}");
-    CHECK(out && strncmp(out, "error:", 6) == 0,
-          "read_file cannot bypass permissions with an absolute path");
-    free(out);
-
-    out = tool_run("read_file", "{\"path\":\"src/../Makefile\"}");
-    CHECK(out && strncmp(out, "error:", 6) == 0,
-          "read_file rejects parent traversal even when target is inside");
     free(out);
 
     out = tool_run("no_such_tool", "{}");
@@ -280,7 +295,6 @@ static void test_schema(void) {
 static void test_msgs(void) {
     printf("== msgs ==\n");
 
-    /* ---- 契约：空历史、NULL ---- */
     char *json = msgs_to_json(NULL);
     CHECK(json && strcmp(json, "[]") == 0, "msgs_to_json(NULL) 返回 \"[]\" 而不是 NULL");
     free(json);
@@ -293,9 +307,6 @@ static void test_msgs(void) {
     CHECK(json && strcmp(json, "[]") == 0, "空对话序列化成 \"[]\"");
     free(json);
 
-    /* ---- 转义自证 ----
-     * 内容里故意塞进双引号、反斜杠、换行，以及一段长得像 JSON 的文本。
-     * 往返一圈之后必须一字不差。这一个用例同时验证了转义、拼接和括号闭合。 */
     const char *nasty = "quote:\" back\\slash newline:\n brace:{} comma:, end";
 
     const char *assistant =
@@ -316,9 +327,6 @@ static void test_msgs(void) {
     CHECK(root && cJSON_IsArray(root), "它是一个 JSON 数组");
     CHECK(root && cJSON_GetArraySize(root) == 3, "数组里有 3 个元素");
 
-    /* ---- 顺序断言 ----
-     * user -> assistant(带 tool_calls) -> tool，这是 OpenAI 协议的硬要求，
-     * 顺序反了接口会返回 400。 */
     cJSON *m0 = cJSON_GetArrayItem(root, 0);
     cJSON *m1 = cJSON_GetArrayItem(root, 1);
     cJSON *m2 = cJSON_GetArrayItem(root, 2);
@@ -331,7 +339,6 @@ static void test_msgs(void) {
     CHECK(cJSON_IsString(r1) && strcmp(r1->valuestring, "assistant") == 0, "第 2 条是 assistant");
     CHECK(cJSON_IsString(r2) && strcmp(r2->valuestring, "tool") == 0, "第 3 条是 tool");
 
-    /* ---- 转义往返 ---- */
     cJSON *c0 = cJSON_GetObjectItem(m0, "content");
     CHECK(cJSON_IsString(c0) && strcmp(c0->valuestring, nasty) == 0,
           "user 内容里的引号 / 反斜杠 / 换行一字不差地活了下来");
@@ -344,7 +351,6 @@ static void test_msgs(void) {
     CHECK(cJSON_IsString(id2) && strcmp(id2->valuestring, "call_1") == 0,
           "tool_call_id 原样保留");
 
-    /* ---- 嵌套结构没被压平 ---- */
     cJSON *tc = cJSON_GetObjectItem(m1, "tool_calls");
     CHECK(cJSON_IsArray(tc) && cJSON_GetArraySize(tc) == 1, "assistant 的 tool_calls 完整保留");
 
@@ -356,14 +362,12 @@ static void test_msgs(void) {
     cJSON_Delete(root);
     free(json);
 
-    /* ---- 非法 JSON 被拦下 ---- */
     int before = msgs_count(m);
     msgs_add_assistant_raw(m, "not json at all");
     CHECK(msgs_count(m) == before, "非法 JSON 被拒绝，count 不变");
 
-    /* ---- 扩容路径 ---- */
     for (int i = 0; i < 100; i++) msgs_add_user(m, "x");
-    CHECK(msgs_count(m) == 103, "扩容路径：累计 103 条");
+    CHECK(msgs_count(m) == 103, "连续追加：累计 103 条");
 
     json = msgs_to_json(m);
     root = cJSON_Parse(json);
@@ -371,7 +375,6 @@ static void test_msgs(void) {
     cJSON_Delete(root);
     free(json);
 
-    /* ---- NULL 安全 ---- */
     msgs_add_user(NULL, "x");
     msgs_add_assistant_raw(NULL, "{}");
     msgs_add_tool_result(NULL, "id", "out");
@@ -385,8 +388,15 @@ static void test_msgs(void) {
     msgs_free(m);
 }
 
-
 static void test_new_tools(void) {
+    /* 子目录夹具：验证 list_dir 能看到嵌套结构 */
+    _mkdir("tmp_sub");
+    FILE *nested = fopen("tmp_sub/inside.txt", "wb");
+    if (nested) {
+        fputs("x", nested);
+        fclose(nested);
+    }
+
     FILE *bad_name = fopen("tmp_bad\xff", "wb");
     if (bad_name) {
         fclose(bad_name);
@@ -395,52 +405,74 @@ static void test_new_tools(void) {
         free(listing);
         remove("tmp_bad\xff");
     } else puts("  SKIP  filesystem does not support non-UTF-8 filenames");
-    char *out = tool_run("list_dir", "{\"path\":\"src\"}");
-    CHECK(out && strstr(out, "main.c") && strstr(out, "tools/"), "list_dir lists files and directories");
+    char *out = tool_run("list_dir", "{\"path\":\".\"}");
+    CHECK(out && strstr(out, "tmp_sub/"), "list_dir marks directories with a trailing slash");
     free(out);
-    out = tool_run("list_dir", "{\"path\":\"..\"}");
-    CHECK(out && strstr(out, "error:"), "list_dir rejects traversal"); free(out);
-    out = tool_run("write_file", "{\"path\":\"tmp_write.txt\",\"content\":\"中文\\nhello\"}");
-    CHECK(out && !strstr(out, "error:"), "write_file creates file"); free(out);
+    out = tool_run("list_dir", "{\"path\":\"tmp_sub\"}");
+    CHECK(out && strstr(out, "inside.txt"), "list_dir lists nested directories");
+    free(out);
+
+    out = tool_run("write_file", "{\"path\":\"tmp_write.txt\",\"old_string\":\"\",\"new_string\":\"中文\\nhello\"}");
+    CHECK(out && !strstr(out, "error:"), "write_file creates a file with empty old_string"); free(out);
     out = tool_run("read_file", "{\"path\":\"tmp_write.txt\"}");
-    CHECK(out && strcmp(out, "中文\nhello") == 0, "written content round trips"); free(out);
-    out = tool_run("write_file", "{\"path\":\"tmp_write.txt\",\"content\":\"\"}");
-    CHECK(out && !strstr(out, "error:"), "write_file allows empty replacement"); free(out);
+    CHECK(out && strcmp(out, "中文\nhello") == 0, "created content round trips"); free(out);
+    out = tool_run("write_file", "{\"path\":\"tmp_write.txt\",\"old_string\":\"\",\"new_string\":\"x\"}");
+    CHECK(out && strstr(out, "error:"), "empty old_string on an existing file is rejected"); free(out);
+    out = tool_run("write_file", "{\"path\":\"tmp_write.txt\",\"old_string\":\"hello\",\"new_string\":\"world\"}");
+    CHECK(out && !strstr(out, "error:"), "write_file edits only the matched part"); free(out);
     out = tool_run("read_file", "{\"path\":\"tmp_write.txt\"}");
-    CHECK(out && strcmp(out, "(empty file)") == 0, "overwrite truncates old content"); free(out);
+    CHECK(out && strcmp(out, "中文\nworld") == 0, "the rest of the file is untouched"); free(out);
+    out = tool_run("write_file", "{\"path\":\"tmp_write.txt\",\"old_string\":\"no such text\",\"new_string\":\"x\"}");
+    CHECK(out && strstr(out, "error:"), "old_string not found is an error"); free(out);
+    out = tool_run("write_file", "{\"path\":\"tmp_dup.txt\",\"old_string\":\"\",\"new_string\":\"ab\\nab\\n\"}");
+    CHECK(out && !strstr(out, "error:"), "ambiguity fixture created"); free(out);
+    out = tool_run("write_file", "{\"path\":\"tmp_dup.txt\",\"old_string\":\"ab\",\"new_string\":\"x\"}");
+    CHECK(out && strstr(out, "error:"), "ambiguous old_string is rejected, not guessed"); free(out);
+    out = tool_run("write_file", "{\"path\":\"tmp_write.txt\",\"old_string\":\"\\nworld\",\"new_string\":\"\"}");
+    CHECK(out && !strstr(out, "error:"), "empty new_string deletes the match"); free(out);
+    out = tool_run("read_file", "{\"path\":\"tmp_write.txt\"}");
+    CHECK(out && strcmp(out, "中文") == 0, "deletion applied correctly"); free(out);
     remove("tmp_write.txt");
-    out = tool_run("write_file", "{\"path\":\"../escape.txt\",\"content\":\"x\"}");
-    CHECK(out && strstr(out, "error:"), "write_file rejects traversal"); free(out);
-    out = tool_run("run_command", "{\"command\":\"echo hello; echo problem >&2; exit 7\"}");
+    remove("tmp_dup.txt");
+    out = tool_run("run_command", "{\"command\":\"echo hello & echo problem 1>&2 & exit /b 7\"}");
     CHECK(out && strstr(out, "hello") && strstr(out, "problem") && strstr(out, "exit_code: 7"), "command captures stdout stderr and exit code"); free(out);
-    out = tool_run("run_command", "{\"command\":\"sleep 5\",\"timeout_ms\":100}");
-    CHECK(out && strstr(out, "timed out"), "command enforces timeout"); free(out);
-    out = tool_run("run_command", "{\"command\":\"yes x\",\"timeout_ms\":100}");
+    out = tool_run("run_command", "{\"command\":\"ping -n 6 127.0.0.1 >nul\",\"timeout_ms\":300}");
+    CHECK(out && strstr(out, "timed out") && strstr(out, "exit_code: 124"), "command enforces timeout"); free(out);
+    /* 输出远超 4000 字节，验证上限生效且不会把内存读爆。 */
+    out = tool_run("run_command", "{\"command\":\"for /l %i in (1,1,4000) do @echo AAAAAAAAAA\"}");
     CHECK(out && strlen(out) < 4300 && strstr(out, "truncated"), "command bounds continuous output"); free(out);
 
-    out = tool_run("list_dir", "{\"path\":\"src/\"}");
-    CHECK(out && strstr(out, "main.c"), "list_dir accepts trailing separator"); free(out);
-    out = tool_run("run_command", "{\"command\":\"printf '\\\\344\\\\270\\\\255'; printf '\\\\377'\"}");
-    CHECK(out && strstr(out, "中") && utf8_valid(out), "command output preserves UTF-8 and sanitizes invalid bytes"); free(out);
-    out = tool_run("run_command", "{\"command\":\"read value; echo stdin-closed\"}");
+    out = tool_run("list_dir", "{\"path\":\"tmp_sub/\"}");
+    CHECK(out && strstr(out, "inside.txt"), "list_dir accepts trailing separator"); free(out);
+    /* 清洗后的命令输出必须始终是合法 UTF-8。
+     * 这里只断言"清洗生效"，不追中文能不能原样回来 —— cmd.exe 内含的非 UTF-8
+     * 字节（中文 Windows 上是 GBK）会被替换成 ?，属于已知限制。 */
+    out = tool_run("run_command", "{\"command\":\"echo abc\"}");
+    CHECK(out && strstr(out, "abc") && utf8_valid(out), "command output is always valid UTF-8"); free(out);
+    out = tool_run("run_command", "{\"command\":\"set /p v=& echo stdin-closed\"}");
     CHECK(out && strstr(out, "stdin-closed") && strstr(out, "exit_code: 0"), "command stdin is closed for interactive reads"); free(out);
     out = tool_run("run_command", "{\"command\":\"echo x\",\"timeout_ms\":0}");
     CHECK(out && strstr(out, "error:"), "command rejects invalid timeout"); free(out);
-    out = tool_run("run_command", "{\"command\":\"printf '%04000d' 0\"}");
+    /* 332 行 * 12 字节 + 一行 16 字节 = 正好 4000 字节：等于上限时不该报截断。 */
+    out = tool_run("run_command", "{\"command\":\"(for /l %i in (1,1,332) do @echo AAAAAAAAAA) & echo AAAAAAAAAAAAAA\"}");
     CHECK(out && !strstr(out, "truncated") && strlen(out) > 4000, "exact output limit does not falsely truncate"); free(out);
     const char *names[] = {"list_dir", "write_file", "run_command"};
     for (size_t i = 0; i < 3; i++) {
-        out = tool_run(names[i], "{\"path\":12,\"command\":false,\"content\":0}");
+        out = tool_run(names[i], "{\"path\":12,\"command\":false,\"old_string\":0,\"new_string\":false}");
         CHECK(out && strstr(out, "error:"), "new tools validate argument types"); free(out);
     }
+    remove("tmp_sub/inside.txt");
+    _rmdir("tmp_sub");
 }
 
 int main(void) {
-    if (!permissions_init()) return 1;
+    _mkdir("workspace");
+    if (_chdir("workspace") != 0) return 1;
     test_strbuf_basic();
     test_strbuf_edge();
     test_strbuf_growth();
     test_read_file();
+    test_plain_paths();
     test_read_file_errors();
     test_truncation();
     test_truncation_utf8();
@@ -454,5 +486,7 @@ int main(void) {
     } else {
         printf("%d FAILURE(S)\n", failures);
     }
+
+    fflush(stdout);
     return failures == 0 ? 0 : 1;
 }

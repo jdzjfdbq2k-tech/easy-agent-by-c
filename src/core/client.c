@@ -6,8 +6,6 @@
 
 #include "client.h"
 
-#pragma comment(lib, "winhttp.lib")
-
 char *client_post_json(
     const wchar_t *host,
     const wchar_t *path,

@@ -1,11 +1,17 @@
-#ifndef _WIN32
-#define _POSIX_C_SOURCE 200809L
-#endif
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
+#include <direct.h>
+
+/* 目标平台只有 Windows。_WIN32_WINNT 必须在 windows.h 之前定义。 */
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
+
+#include <wchar.h>
+#include <windows.h>
+
 #include "tool_definition.h"
-#include "permissions.h"
 #include "strbuf.h"
 #include "text_output.h"
 
@@ -27,13 +33,6 @@ static void collect(command_result *r, const char *data, size_t n) {
     if (keep < n || r->len > OUTPUT_LIMIT) r->truncated = 1;
 }
 
-#ifdef _WIN32
-#ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0600
-#endif
-#include <windows.h>
-#include <wchar.h>
-
 static wchar_t *to_wide(const char *text) {
     int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, NULL, 0);
     wchar_t *w = n > 0 ? malloc((size_t)n * sizeof(*w)) : NULL;
@@ -43,19 +42,19 @@ static wchar_t *to_wide(const char *text) {
     return w;
 }
 
-static int execute_command(const char *command, const char *cwd, unsigned timeout,
+static int execute_command(const char *command, const wchar_t *cwd, unsigned timeout,
                            command_result *result) {
     HANDLE rd = NULL, wr = NULL, input = INVALID_HANDLE_VALUE, job = NULL;
     PROCESS_INFORMATION pi = {0};
     STARTUPINFOW si = {0};
     SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
-    wchar_t shell[MAX_PATH], *directory = to_wide(cwd), *line = NULL;
+    wchar_t shell[MAX_PATH], *line = NULL;
     strbuf cmd;
     sb_init(&cmd);
     int ok = 0;
     /* 使用系统目录内的 cmd.exe，避免当前目录中的同名程序劫持。 */
     UINT n = GetSystemDirectoryW(shell, MAX_PATH);
-    if (!n || n + 9 >= MAX_PATH || !directory) goto done;
+    if (!n || n + 9 >= MAX_PATH) goto done;
     wcscat(shell, L"\\cmd.exe");
     if (!sb_printf(&cmd, "cmd.exe /d /s /c \"\"%%SystemRoot%%\\System32\\chcp.com\" 65001 >nul && %s\"", command)) goto done;
     line = to_wide(cmd.data);
@@ -76,7 +75,7 @@ static int execute_command(const char *command, const char *cwd, unsigned timeou
     si.hStdOutput = wr;
     si.hStdError = wr;
     if (!CreateProcessW(shell, line, NULL, NULL, TRUE,
-                        CREATE_SUSPENDED | CREATE_NEW_CONSOLE, NULL, directory, &si, &pi)) goto done;
+                        CREATE_SUSPENDED | CREATE_NEW_CONSOLE, NULL, cwd, &si, &pi)) goto done;
     if (!AssignProcessToJobObject(job, pi.hProcess) || ResumeThread(pi.hThread) == (DWORD)-1) {
         TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, INFINITE);
@@ -132,87 +131,9 @@ done:
     if (rd) CloseHandle(rd);
     if (wr) CloseHandle(wr);
     if (input != INVALID_HANDLE_VALUE) CloseHandle(input);
-    free(line); free(directory); sb_free(&cmd);
+    free(line); sb_free(&cmd);
     return ok;
 }
-#else
-#include <errno.h>
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/wait.h>
-#include <time.h>
-#include <unistd.h>
-
-static unsigned long long monotonic_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (unsigned long long)ts.tv_sec * 1000 + (unsigned long long)ts.tv_nsec / 1000000;
-}
-
-static int execute_command(const char *command, const char *cwd, unsigned timeout,
-                           command_result *result) {
-    int pipefd[2];
-    (void)cwd; /* POSIX 通过固定目录句柄进入工作区，允许目录改名。 */
-    if (pipe(pipefd)) return 0;
-    int flags = fcntl(pipefd[0], F_GETFL);
-    if (flags < 0 || fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK) < 0) {
-        close(pipefd[0]); close(pipefd[1]); return 0;
-    }
-    pid_t pid = fork();
-    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return 0; }
-    if (pid == 0) {
-        close(pipefd[0]);
-        int input = open("/dev/null", O_RDONLY);
-        if (setpgid(0, 0) || !permissions_enter_workspace() || input < 0 ||
-            dup2(input, STDIN_FILENO) < 0 || dup2(pipefd[1], STDOUT_FILENO) < 0 ||
-            dup2(pipefd[1], STDERR_FILENO) < 0) _exit(126);
-        if (input > STDERR_FILENO) close(input);
-        if (pipefd[1] > STDERR_FILENO) close(pipefd[1]);
-        execl("/bin/sh", "sh", "-c", command, (char *)NULL);
-        _exit(127);
-    }
-    close(pipefd[1]);
-    setpgid(pid, pid); /* 子进程也设置，消除父/子调度顺序的竞态。 */
-    unsigned long long start = monotonic_ms();
-    int status = 0, finished = 0, ok = 1;
-    for (;;) {
-        for (int i = 0; i < 16; i++) {
-            char buffer[1024];
-            ssize_t n = read(pipefd[0], buffer, sizeof(buffer));
-            if (n > 0) collect(result, buffer, (size_t)n);
-            else if (n < 0 && errno == EINTR) continue;
-            else {
-                if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) ok = 0;
-                break;
-            }
-        }
-        pid_t waited = waitpid(pid, &status, WNOHANG);
-        if (waited == pid) { finished = 1; break; }
-        if (!ok || (waited < 0 && errno != EINTR)) { ok = 0; break; }
-        if (monotonic_ms() - start >= timeout) { result->timed_out = 1; break; }
-        struct timespec pause = {0, 10000000};
-        nanosleep(&pause, NULL);
-    }
-    kill(-pid, SIGKILL); /* 超时或主命令退出时清理同组后台进程。 */
-    if (!finished) {
-        kill(pid, SIGKILL);
-        while (waitpid(pid, &status, 0) < 0) if (errno != EINTR) { ok = 0; break; }
-    }
-    /* 有界排空，脱离进程组的程序即使继续写入也不能阻塞工具返回。 */
-    for (int i = 0; i < 256; i++) {
-        char buffer[1024];
-        ssize_t n = read(pipefd[0], buffer, sizeof(buffer));
-        if (n > 0) collect(result, buffer, (size_t)n);
-        else if (n < 0 && errno == EINTR) continue;
-        else break;
-    }
-    close(pipefd[0]);
-    result->exit_code = result->timed_out ? 124 :
-        WIFEXITED(status) ? (unsigned long)WEXITSTATUS(status) :
-        WIFSIGNALED(status) ? (unsigned long)(128 + WTERMSIG(status)) : 1;
-    return ok;
-}
-#endif
 
 /* 命令可能输出任意字节。保留有效 UTF-8，其余字节以 ? 表示，避免破坏 JSON。 */
 static void format_output(strbuf *out, const command_result *r) {
@@ -248,14 +169,12 @@ static char *run_command(const cJSON *args) {
         }
         ms = (unsigned)timeout->valuedouble;
     }
-    char *cwd = permissions_workspace_path();
-#ifdef _WIN32
-    if (cwd && cwd[0] == '\\' && cwd[1] == '\\') {
+    wchar_t *cwd = _wgetcwd(NULL, 0);
+    if (cwd && cwd[0] == L'\\' && cwd[1] == L'\\') {
         free(cwd);
         sb_puts(&out, "error: cmd.exe requires a drive-letter workspace (UNC working directories are unsupported)");
         return sb_detach(&out);
     }
-#endif
     command_result result = {0};
     if (!cwd || !execute_command(cmd->valuestring, cwd, ms, &result))
         sb_puts(&out, "error: command could not be executed");
@@ -266,7 +185,7 @@ static char *run_command(const cJSON *args) {
 
 const tool_definition tool_run_command_definition = {
     .name = "run_command",
-    .description = "在工作区启动 shell 命令（Windows cmd.exe，其他平台 /bin/sh），返回标准输出、错误输出和退出码。默认超时 30000ms，输出最多约 4000 字节。命令拥有当前用户权限，不受文件工具路径限制。",
-    .parameters_json = "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"要执行的 shell 命令\"},\"timeout_ms\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":120000,\"description\":\"超时毫秒数，默认 30000\"}},\"required\":[\"command\"]}",
+    .description = "在工作区启动 Windows cmd.exe 命令，返回标准输出、错误输出和退出码。默认超时 30000ms，输出最多约 4000 字节。命令拥有当前用户权限，不受文件工具路径限制。",
+    .parameters_json = "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"要执行的 cmd.exe 命令\"},\"timeout_ms\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":120000,\"description\":\"超时毫秒数，默认 30000\"}},\"required\":[\"command\"]}",
     .execute = run_command
 };

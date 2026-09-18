@@ -4,10 +4,6 @@
 #include <stddef.h>
 #include "cJSON.h"
 
-/* 工具作者接口，仅供工具层使用。元数据具有静态生命周期。
- * execute 借用 args，不可保存或释放它；返回 malloc 分配的文本，
- * 调用方负责 free，内存不足可返回 NULL。字段语义由各工具校验。
- */
 typedef struct {
     const char *name;
     const char *description;

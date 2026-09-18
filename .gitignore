@@ -2,7 +2,8 @@
 *.o
 tmp_*.txt
 tests/test_tools
-.workbuddy/
+/.8workspace
+
 
 
 build/

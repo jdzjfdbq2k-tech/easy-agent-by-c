@@ -7,12 +7,6 @@
 
 #define SB_MIN_CAP 64
 
-/*
- * 保证还有 extra 字节可用（外加结尾的 '\0'）。
- *
- * 增长策略：容量翻倍。这样连续 append N 次的总代价是 O(N)，
- * 而不是每次 realloc 都搬家导致的 O(N^2)。这是所有动态数组的标准做法。
- */
 static int sb_ensure(strbuf *sb, size_t extra) {
     if (sb->cap >= sb->len + extra + 1) return 1;
 

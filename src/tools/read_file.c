@@ -4,27 +4,12 @@
 
 #include "tool_definition.h"
 #include "strbuf.h"
-#include "permissions.h"
+#include "file_io.h"
 
 #define TOOL_OUTPUT_MAX 4000
 
-/* ------------------------------------------------------------------ */
 /* read_file 的实现                                                    */
-/* ------------------------------------------------------------------ */
 
-/*
- * 把切点从"可能落在多字节字符中间"的位置，退回到最近的 UTF-8 字符边界。
- *
- * 为什么必须做这件事：
- *   4000 是个字节数，而中文字符占 3 个字节（emoji 占 4 个）。如果第 4000
- *   个字节正好是某个中文字符的第 2 个字节，那切出来的就是一个残缺的
- *   字节序列 —— 合法 JSON 里不允许出现非法 UTF-8，严格的服务端会直接
- *   拒绝整个请求，而错误信息一般只说"请求格式错误"，根本不会指向这里。
- *
- * 判据：UTF-8 的后续字节（continuation byte）形如 10xxxxxx。
- * 如果切点那个字节是后续字节，说明它属于前面那个字符，必须继续往前退。
- * 一个 UTF-8 字符最多 4 字节，所以最多退 3 次。
- */
 static size_t utf8_boundary(const char *s, size_t n) {
     while (n > 0 && ((unsigned char)s[n] & 0xC0) == 0x80) {
         n--;
@@ -44,9 +29,9 @@ static char *tool_read_file(const cJSON *args) {
         return sb_detach(&out);
     }
 
-    FILE *fp = permissions_open_read(path->valuestring);
+    FILE *fp = file_open(path->valuestring, L"rb");
     if (!fp) {
-        sb_printf(&out, "error: file denied or cannot be opened (workspace files only): \"%s\"",
+        sb_printf(&out, "error: cannot open file: \"%s\"",
                   path->valuestring);
         return sb_detach(&out);
     }
@@ -57,10 +42,7 @@ static char *tool_read_file(const cJSON *args) {
 
     while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
         if (out.len + n >= TOOL_OUTPUT_MAX) {
-            /* 多收 4 个字节再停。
-             * 因为下面要判断"切点那个字节是不是多字节字符的一半"，
-             * 而那个判断需要看到切点本身 —— 只收到 4000 就停的话，
-             * 恰好跨界时根本看不到下一个字节。 */
+
             size_t keep_end = TOOL_OUTPUT_MAX + 4;
             size_t want = (out.len >= keep_end) ? 0 : keep_end - out.len;
             if (want > n) want = n;
@@ -98,7 +80,7 @@ const tool_definition tool_read_file_definition = {
     .parameters_json =
         "{\"type\":\"object\",\"properties\":{"
         "\"path\":{\"type\":\"string\","
-        "\"description\":\"文件路径，仅限工作区相对路径，例如 src/main.c\"}},"
+        "\"description\":\"文件路径，相对路径以当前工作目录为基准，例如 src/main.c\"}},"
         "\"required\":[\"path\"]}",
     .execute = tool_read_file
 };

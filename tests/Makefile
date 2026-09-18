@@ -1,37 +1,29 @@
-# 平台无关测试；从项目根目录或 tests/ 中都可以启动。
-CC ?= cc
-CPPFLAGS += -I../include -I../src/tools
+SHELL := cmd.exe
+
+CC := gcc
+CPPFLAGS += -I../include -I../src/tools -I../vendor/cJSON
 CFLAGS ?= -std=c11 -Wall -Wextra
 ROOT := ..
 BUILD := $(ROOT)/build/tests
-COMMON := $(ROOT)/src/strbuf.c $(ROOT)/src/cJSON.c
+COMMON := $(ROOT)/src/util/strbuf.c $(ROOT)/vendor/cJSON/cJSON.c
 TOOLS := $(wildcard $(ROOT)/src/tools/*.c)
-HEADERS := $(wildcard $(ROOT)/include/*.h $(ROOT)/src/tools/*.h)
-TARGETS := $(BUILD)/test_tools $(BUILD)/test_registry $(BUILD)/test_permissions $(BUILD)/test_workspace_tools
+HEADERS := $(wildcard $(ROOT)/include/*.h $(ROOT)/src/tools/*.h $(ROOT)/vendor/cJSON/*.h)
+TARGETS := $(BUILD)/test_tools.exe $(BUILD)/test_registry.exe
 
 all: $(TARGETS)
-	cd $(ROOT) && ./build/tests/test_tools
-	cd $(ROOT) && ./build/tests/test_registry
-	cd $(ROOT) && ./build/tests/test_permissions
-	cd $(ROOT) && ./build/tests/test_workspace_tools
+	@cd $(ROOT) && build\tests\test_tools.exe
+	@cd $(ROOT) && build\tests\test_registry.exe
 
 $(BUILD):
-	mkdir -p $@
+	@if not exist "$(subst /,\,$@)" mkdir "$(subst /,\,$@)"
 
-$(BUILD)/test_tools: test_tools.c $(COMMON) $(TOOLS) $(ROOT)/src/msgs.c $(ROOT)/src/permissions.c $(HEADERS) | $(BUILD)
+$(BUILD)/test_tools.exe: test_tools.c $(COMMON) $(TOOLS) $(ROOT)/src/core/msgs.c $(HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(filter %.c,$^) $(LDFLAGS) -o $@
 
-$(BUILD)/test_workspace_tools: test_workspace_tools.c $(COMMON) $(TOOLS) $(ROOT)/src/permissions.c $(HEADERS) | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(filter %.c,$^) $(LDFLAGS) -o $@
-
-# 用两个测试工具替换 builtins.c，验证扩展不需要改 registry.c。
-$(BUILD)/test_registry: test_registry.c $(COMMON) $(ROOT)/src/tools/registry.c $(HEADERS) | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(filter %.c,$^) $(LDFLAGS) -o $@
-
-$(BUILD)/test_permissions: test_permissions.c $(ROOT)/src/permissions.c $(HEADERS) | $(BUILD)
+$(BUILD)/test_registry.exe: test_registry.c $(COMMON) $(ROOT)/src/tools/registry.c $(HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(filter %.c,$^) $(LDFLAGS) -o $@
 
 clean:
-	$(RM) $(TARGETS)
+	@if exist "$(subst /,\,$(BUILD))" rmdir /s /q "$(subst /,\,$(BUILD))"
 
 .PHONY: all clean
