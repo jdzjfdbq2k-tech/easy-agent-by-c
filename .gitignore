@@ -2,5 +2,6 @@
 *.o
 tmp_*.txt
 tests/test_tools
+.workbuddy/
 
 
