@@ -80,13 +80,10 @@ static char *make_json(const char *model, const char *messages_json) {
     }
     cJSON_AddItemToObject(root, "messages", messages);
 
-    /* 把工具说明书挂到请求体上。
-     *
-     * tools_schema_json() 给的是一段 JSON 文本，这里 parse 一次再挂进去。
-     * 看起来绕，但换来的是：tools.h 完全不需要暴露 cJSON 的类型，
-     * 工具模块和网络模块之间没有类型耦合。加第二个工具时你只要改
-     * tools.c 里的那段文本，llm.c 一行都不用动。 */
-    cJSON *tools = cJSON_Parse(tools_schema_json());
+    /* 工具 schema 和执行分发都来自同一份注册表。 */
+    char *schema = tools_schema_json();
+    cJSON *tools = schema ? cJSON_Parse(schema) : NULL;
+    free(schema);
     if (!tools) {
         cJSON_Delete(root);
         return NULL;

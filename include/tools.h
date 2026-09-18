@@ -7,7 +7,7 @@
  * 边界非常清楚：
  *   tools.h 对外只暴露"名字 + 参数 JSON 字符串"这种形态，
  *   刻意不暴露 cJSON 的类型。这样 llm.c 不需要知道工具是怎么实现的，
- *   工具的增删也不会传染到别的模块。这个隔离在第三步加注册表时会省很多事。
+ *   工具的增删只涉及 src/tools/，不影响模型与主循环模块。
  */
 
 /* 模型请求的一次工具调用。
@@ -25,15 +25,15 @@ typedef struct {
 void tool_call_free(tool_call *call);
 
 /* 返回给模型的工具定义，是一段 JSON **数组**文本（可能不止一个工具）。
- * 生命周期是静态的，调用方不要 free。 */
-const char *tools_schema_json(void);
+ * 调用方负责 free；注册定义无效或内存不足时返回 NULL。 */
+char *tools_schema_json(void);
 
 /* 执行一次工具调用。
  *   name           工具名
  *   arguments_json 模型给的参数文本（就是 tool_call.arguments）
  *
- * 返回值：工具输出文本，调用方负责 free。永远不会返回 NULL ——
- * 工具内部出错时也返回一段以 "error: " 开头的描述。
+ * 返回值：工具输出文本，调用方负责 free。
+ * 一般错误返回以 "error: " 开头的描述；内存不足时可能返回 NULL。
  *
  * 为什么出错也要返回字符串而不是 NULL：
  *   因为这段文本最终要塞回对话给模型看。模型看到 "error: ..." 才知道
